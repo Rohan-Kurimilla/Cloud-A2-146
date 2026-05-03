@@ -9,7 +9,7 @@ document.getElementById('login-form').addEventListener('submit', async function(
     msgEl.style.display = 'none';
 
     try {
-        const res = await fetch(API_BASE_URL + '/auth/login', {
+        const res = await fetch(API_BASE_URL + '/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password })

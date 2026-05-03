@@ -10,7 +10,7 @@ document.getElementById('register-form').addEventListener('submit', async functi
     msgEl.style.display = 'none';
 
     try {
-        const res = await fetch(API_BASE_URL + '/auth/register', {
+        const res = await fetch(API_BASE_URL + '/register', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, user_name: username, password })
@@ -18,7 +18,7 @@ document.getElementById('register-form').addEventListener('submit', async functi
 
         const data = await res.json();
 
-        if (res.status === 201) {
+        if (res.ok)  {
             msgEl.className = 'message-box success';
             msgEl.textContent = 'Account created! Redirecting to sign in…';
             msgEl.style.display = 'block';

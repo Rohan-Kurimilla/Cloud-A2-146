@@ -1,6 +1,5 @@
 // app.js — Sonata frontend logic
 
-// ── Utility ─────────────────────────────────────────────────────────────────
 function escapeApostrophe(text) {
     return (text || '').split("'").join("\\'");
 }
@@ -9,25 +8,31 @@ function pickImage(song) {
     return song.presigned_url || song.image_url || '';
 }
 
-// ── Make a song card element ─────────────────────────────────────────────────
+function buildMusicId(song) {
+    return `${song.artist}#${song.title}#${song.year}#${song.album || ''}`;
+}
+
 function makeSongCard(song, actionType) {
     const card = document.createElement('div');
     card.className = 'song-card';
 
     const imgSrc = pickImage(song);
-    const safeTitle  = escapeApostrophe(song.title);
+    const safeTitle = escapeApostrophe(song.title);
     const safeArtist = escapeApostrophe(song.artist);
-    const safeAlbum  = escapeApostrophe(song.album || '');
+    const safeAlbum = escapeApostrophe(song.album || '');
+    const safeImageKey = escapeApostrophe(song.image_s3_key || '');
+    const safeMusicId = escapeApostrophe(song.music_id || buildMusicId(song));
 
     const imgTag = imgSrc
         ? `<img class="card-img" src="${imgSrc}" alt="${song.artist}" onerror="this.style.display='none'">`
         : `<div class="card-img placeholder">♪</div>`;
 
-    const btnClass  = actionType === 'subscribe' ? 'subscribe' : 'remove';
-    const btnLabel  = actionType === 'subscribe' ? '+ Subscribe' : '✕ Remove';
+    const btnClass = actionType === 'subscribe' ? 'subscribe' : 'remove';
+    const btnLabel = actionType === 'subscribe' ? '+ Subscribe' : '✕ Remove';
+
     const btnAction = actionType === 'subscribe'
-        ? `addSubscription('${safeTitle}','${safeArtist}','${song.year}','${safeAlbum}','${song.image_url || ''}')`
-        : `removeSubscription('${safeTitle}','${safeArtist}','${song.year}')`;
+        ? `addSubscription('${safeTitle}','${safeArtist}','${song.year}','${safeAlbum}','${safeImageKey}')`
+        : `removeSubscription('${safeMusicId}')`;
 
     card.innerHTML = `
         ${imgTag}
@@ -41,7 +46,6 @@ function makeSongCard(song, actionType) {
     return card;
 }
 
-// ── Skeleton placeholders while loading ──────────────────────────────────────
 function showSkeletons(container, count = 4) {
     container.innerHTML = '';
     for (let i = 0; i < count; i++) {
@@ -56,7 +60,6 @@ function showSkeletons(container, count = 4) {
     }
 }
 
-// ── Show status message ───────────────────────────────────────────────────────
 function showStatus(el, text, type = 'info') {
     el.textContent = text;
     el.className = `status-msg ${type}`;
@@ -67,22 +70,19 @@ function hideStatus(el) {
     el.style.display = 'none';
 }
 
-// ── On load ──────────────────────────────────────────────────────────────────
 window.onload = function() {
     const email = sessionStorage.getItem('userEmail');
-    if (!email) { window.location.href = 'login.html'; return; }
+    if (!email) {
+        window.location.href = 'login.html';
+        return;
+    }
 
-    // Show username derived from email
     const usernameEl = document.getElementById('display-username');
     if (usernameEl) usernameEl.textContent = email.split('@')[0];
 
-    // Logout handler
     const logoutBtn = document.getElementById('logout-btn');
     if (logoutBtn) {
-        logoutBtn.addEventListener('click', async function() {
-            try {
-                await fetch(API_BASE_URL + '/auth/logout', { method: 'POST' });
-            } catch (_) {}
+        logoutBtn.addEventListener('click', function() {
             sessionStorage.removeItem('userEmail');
             window.location.href = 'login.html';
         });
@@ -91,17 +91,16 @@ window.onload = function() {
     loadSubscriptions(email);
 };
 
-// ── Load subscriptions ───────────────────────────────────────────────────────
 async function loadSubscriptions(email) {
-    const listEl    = document.getElementById('subscription-list');
-    const msgEl     = document.getElementById('sub-message');
-    const countEl   = document.getElementById('sub-count');
+    const listEl = document.getElementById('subscription-list');
+    const msgEl = document.getElementById('sub-message');
+    const countEl = document.getElementById('sub-count');
 
     showSkeletons(listEl, 4);
     hideStatus(msgEl);
 
     try {
-        const ts  = Date.now();
+        const ts = Date.now();
         const res = await fetch(`${API_BASE_URL}/subscriptions?email=${encodeURIComponent(email)}&t=${ts}`);
         const data = await res.json();
 
@@ -118,7 +117,10 @@ async function loadSubscriptions(email) {
             return;
         }
 
-        if (countEl) countEl.textContent = `${data.subscriptions.length} track${data.subscriptions.length !== 1 ? 's' : ''}`;
+        if (countEl) {
+            countEl.textContent = `${data.subscriptions.length} track${data.subscriptions.length !== 1 ? 's' : ''}`;
+        }
+
         data.subscriptions.forEach(song => {
             listEl.appendChild(makeSongCard(song, 'remove'));
         });
@@ -130,15 +132,16 @@ async function loadSubscriptions(email) {
     }
 }
 
-// ── Remove subscription ───────────────────────────────────────────────────────
-window.removeSubscription = async function(title, artist, year) {
+window.removeSubscription = async function(music_id) {
     const email = sessionStorage.getItem('userEmail');
+
     try {
         const res = await fetch(API_BASE_URL + '/subscriptions', {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, title, artist, year })
+            body: JSON.stringify({ email, music_id })
         });
+
         if (res.ok) {
             loadSubscriptions(email);
         } else {
@@ -149,19 +152,18 @@ window.removeSubscription = async function(title, artist, year) {
     }
 };
 
-// ── Search ───────────────────────────────────────────────────────────────────
 document.getElementById('query-form').addEventListener('submit', async function(e) {
     e.preventDefault();
 
-    const title  = document.getElementById('q-title').value.trim();
+    const title = document.getElementById('q-title').value.trim();
     const artist = document.getElementById('q-artist').value.trim();
-    const year   = document.getElementById('q-year').value.trim();
-    const album  = document.getElementById('q-album').value.trim();
+    const year = document.getElementById('q-year').value.trim();
+    const album = document.getElementById('q-album').value.trim();
 
     const resultsSection = document.getElementById('results-section');
-    const resultsEl      = document.getElementById('query-results');
-    const msgEl          = document.getElementById('query-message');
-    const countEl        = document.getElementById('results-count');
+    const resultsEl = document.getElementById('query-results');
+    const msgEl = document.getElementById('query-message');
+    const countEl = document.getElementById('results-count');
 
     if (!title && !artist && !year && !album) {
         resultsSection.style.display = 'block';
@@ -176,30 +178,30 @@ document.getElementById('query-form').addEventListener('submit', async function(
     showSkeletons(resultsEl, 4);
     countEl.textContent = 'Searching…';
 
-    // Scroll to results
     setTimeout(() => resultsSection.scrollIntoView({ behavior: 'smooth' }), 80);
 
     const params = new URLSearchParams();
-    if (title)  params.append('title',  title);
+    if (title) params.append('title', title);
     if (artist) params.append('artist', artist);
-    if (year)   params.append('year',   year);
-    if (album)  params.append('album',  album);
+    if (year) params.append('year', year);
+    if (album) params.append('album', album);
 
     try {
-        const res  = await fetch(`${API_BASE_URL}/music/query?${params}`);
+        const res = await fetch(`${API_BASE_URL}/songs?${params}`);
         const data = await res.json();
 
         resultsEl.innerHTML = '';
 
-        if (!data.results || data.results.length === 0 ||
+        if (!data.songs || data.songs.length === 0 ||
             (data.message && data.message.includes('No result'))) {
             countEl.textContent = '0 results';
             showStatus(msgEl, 'No result is retrieved. Please query again', 'info');
             return;
         }
 
-        countEl.textContent = `${data.results.length} result${data.results.length !== 1 ? 's' : ''}`;
-        data.results.forEach((song, i) => {
+        countEl.textContent = `${data.songs.length} result${data.songs.length !== 1 ? 's' : ''}`;
+
+        data.songs.forEach((song, i) => {
             const card = makeSongCard(song, 'subscribe');
             card.style.animationDelay = (i * 0.04) + 's';
             resultsEl.appendChild(card);
@@ -213,23 +215,29 @@ document.getElementById('query-form').addEventListener('submit', async function(
     }
 });
 
-// ── Add subscription ─────────────────────────────────────────────────────────
-window.addSubscription = async function(title, artist, year, album, image_url) {
+window.addSubscription = async function(title, artist, year, album, image_s3_key) {
     const email = sessionStorage.getItem('userEmail');
+
     try {
         const res = await fetch(API_BASE_URL + '/subscriptions', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, title, artist, year, album, image_url })
+            body: JSON.stringify({
+                email,
+                title,
+                artist,
+                year,
+                album,
+                image_s3_key
+            })
         });
 
-        if (res.status === 201) {
+        if (res.ok) {
             loadSubscriptions(email);
-            // Briefly highlight library section
             document.getElementById('library-section').scrollIntoView({ behavior: 'smooth' });
         } else {
             const data = await res.json();
-            alert('Failed to subscribe: ' + (data.error || 'Unknown error'));
+            alert('Failed to subscribe: ' + (data.error || data.message || 'Unknown error'));
         }
     } catch (err) {
         alert('Error subscribing to song.');
