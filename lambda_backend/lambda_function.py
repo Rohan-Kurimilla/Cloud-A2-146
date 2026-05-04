@@ -281,7 +281,7 @@ def lambda_handler(event, context):
     if method == "OPTIONS":
         return response(200, {"message": "CORS preflight successful"})
 
-    if path == "/" and method == "GET":
+    if path in ["/", "/music"] and method == "GET":
         return handle_home()
 
     if path == "/login" and method == "POST":
