@@ -1,171 +1,202 @@
-# create_tables.py
-# This script creates the DynamoDB tables required for the assignment:
-# 1. login
-# 2. music
-# 3. subscriptions
 
 import boto3
 from botocore.exceptions import ClientError
-from config import AWS_REGION, LOGIN_TABLE, MUSIC_TABLE, SUBSCRIPTIONS_TABLE
+
+# ── AWS settings ───────────────────────────────────────────────────────────────
+AWS_REGION = "us-east-1"
+
+LOGIN_TBL = "login"
+MUSIC_TBL = "music"
+SUBS_TBL = "subscriptions"
+
+# ── Index names ────────────────────────────────────────────────────────────────
+GSI_BY_ARTIST = "artist-index"
+LSI_BY_YEAR = "title-year-index"
+
+# ── Boto3 setup ────────────────────────────────────────────────────────────────
+db_resource = boto3.resource("dynamodb", region_name=AWS_REGION)
 
 
-# Create a DynamoDB client
-dynamodb = boto3.client("dynamodb", region_name=AWS_REGION)
+# ───────────────────────────────────────────────────────────────────────────────
+# LOGIN TABLE
+# ───────────────────────────────────────────────────────────────────────────────
 
+def provision_login_table():
 
-def table_exists(table_name):
-    """
-    Check whether a DynamoDB table already exists.
-    Returns True if it exists, otherwise False.
-    """
     try:
-        dynamodb.describe_table(TableName=table_name)
-        return True
-    except dynamodb.exceptions.ResourceNotFoundException:
-        return False
-    except ClientError as error:
-        print(f"Error checking table '{table_name}': {error}")
+        tbl = db_resource.create_table(
+            TableName=LOGIN_TBL,
+
+            KeySchema=[
+                {"AttributeName": "email", "KeyType": "HASH"},
+            ],
+
+            AttributeDefinitions=[
+                {"AttributeName": "email", "AttributeType": "S"},
+            ],
+
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        print(f"[INFO] Waiting for '{LOGIN_TBL}' to become active...")
+        tbl.wait_until_exists()
+
+        print(f"[OK]   '{LOGIN_TBL}' is active and ready.")
+        print(f"       Partition key → email")
+
+        return tbl
+
+    except ClientError as exc:
+        err_code = exc.response["Error"]["Code"]
+
+        if err_code == "ResourceInUseException":
+            print(f"[SKIP] '{LOGIN_TBL}' already exists — skipping creation.")
+            return db_resource.Table(LOGIN_TBL)
+
         raise
 
 
-def wait_for_table(table_name):
-    """
-    Wait until the table becomes active.
-    """
-    print(f"Waiting for table '{table_name}' to become active...")
-    waiter = dynamodb.get_waiter("table_exists")
-    waiter.wait(TableName=table_name)
-    print(f"Table '{table_name}' is now active.\n")
+# ───────────────────────────────────────────────────────────────────────────────
+# MUSIC TABLE
+# ───────────────────────────────────────────────────────────────────────────────
 
+def provision_music_table():
 
-def create_login_table():
-    """
-    Create the login table with:
-    - Partition Key: email
-    """
-    if table_exists(LOGIN_TABLE):
-        print(f"Table '{LOGIN_TABLE}' already exists. Skipping creation.\n")
-        return
+    key_definitions = [
+        {"AttributeName": "title", "AttributeType": "S"},
+        {"AttributeName": "artist#year", "AttributeType": "S"},
+        {"AttributeName": "artist", "AttributeType": "S"},
+        {"AttributeName": "year", "AttributeType": "S"},
+    ]
 
-    print(f"Creating table '{LOGIN_TABLE}'...")
+    primary_key_schema = [
+        {"AttributeName": "title", "KeyType": "HASH"},
+        {"AttributeName": "artist#year", "KeyType": "RANGE"},
+    ]
 
-    dynamodb.create_table(
-        TableName=LOGIN_TABLE,
-        AttributeDefinitions=[
-            {"AttributeName": "email", "AttributeType": "S"}
-        ],
-        KeySchema=[
-            {"AttributeName": "email", "KeyType": "HASH"}
-        ],
-        BillingMode="PAY_PER_REQUEST"
-    )
+    gsi_definitions = [
+        {
+            "IndexName": GSI_BY_ARTIST,
 
-    wait_for_table(LOGIN_TABLE)
+            "KeySchema": [
+                {"AttributeName": "artist", "KeyType": "HASH"},
+                {"AttributeName": "year", "KeyType": "RANGE"},
+            ],
 
+            "Projection": {
+                "ProjectionType": "ALL"
+            },
+        }
+    ]
 
-def create_music_table():
-    """
-    Create the music table with:
-    - Partition Key: artist
-    - Sort Key: title_year_album
+    lsi_definitions = [
+        {
+            "IndexName": LSI_BY_YEAR,
 
-    Local Secondary Index (LSI):
-    - artist + year_album_title
+            "KeySchema": [
+                {"AttributeName": "title", "KeyType": "HASH"},
+                {"AttributeName": "year", "KeyType": "RANGE"},
+            ],
 
-    Global Secondary Index (GSI):
-    - title + artist_year_album
-    """
-    if table_exists(MUSIC_TABLE):
-        print(f"Table '{MUSIC_TABLE}' already exists. Skipping creation.\n")
-        return
+            "Projection": {
+                "ProjectionType": "ALL"
+            },
+        }
+    ]
 
-    print(f"Creating table '{MUSIC_TABLE}'...")
-
-    dynamodb.create_table(
-        TableName=MUSIC_TABLE,
-        AttributeDefinitions=[
-            {"AttributeName": "artist", "AttributeType": "S"},
-            {"AttributeName": "title_year_album", "AttributeType": "S"},
-            {"AttributeName": "year_album_title", "AttributeType": "S"},
-            {"AttributeName": "title", "AttributeType": "S"},
-            {"AttributeName": "artist_year_album", "AttributeType": "S"}
-        ],
-        KeySchema=[
-            {"AttributeName": "artist", "KeyType": "HASH"},
-            {"AttributeName": "title_year_album", "KeyType": "RANGE"}
-        ],
-        LocalSecondaryIndexes=[
-            {
-                "IndexName": "artist-year-album-title-lsi",
-                "KeySchema": [
-                    {"AttributeName": "artist", "KeyType": "HASH"},
-                    {"AttributeName": "year_album_title", "KeyType": "RANGE"}
-                ],
-                "Projection": {
-                    "ProjectionType": "ALL"
-                }
-            }
-        ],
-        GlobalSecondaryIndexes=[
-            {
-                "IndexName": "title-artist-year-album-gsi",
-                "KeySchema": [
-                    {"AttributeName": "title", "KeyType": "HASH"},
-                    {"AttributeName": "artist_year_album", "KeyType": "RANGE"}
-                ],
-                "Projection": {
-                    "ProjectionType": "ALL"
-                }
-            }
-        ],
-        BillingMode="PAY_PER_REQUEST"
-    )
-
-    wait_for_table(MUSIC_TABLE)
-
-
-def create_subscriptions_table():
-    """
-    Create the subscriptions table with:
-    - Partition Key: email
-    - Sort Key: music_id
-    """
-    if table_exists(SUBSCRIPTIONS_TABLE):
-        print(f"Table '{SUBSCRIPTIONS_TABLE}' already exists. Skipping creation.\n")
-        return
-
-    print(f"Creating table '{SUBSCRIPTIONS_TABLE}'...")
-
-    dynamodb.create_table(
-        TableName=SUBSCRIPTIONS_TABLE,
-        AttributeDefinitions=[
-            {"AttributeName": "email", "AttributeType": "S"},
-            {"AttributeName": "music_id", "AttributeType": "S"}
-        ],
-        KeySchema=[
-            {"AttributeName": "email", "KeyType": "HASH"},
-            {"AttributeName": "music_id", "KeyType": "RANGE"}
-        ],
-        BillingMode="PAY_PER_REQUEST"
-    )
-
-    wait_for_table(SUBSCRIPTIONS_TABLE)
-
-
-def main():
-    """
-    Main function to create all required tables.
-    """
     try:
-        create_login_table()
-        create_music_table()
-        create_subscriptions_table()
-        print("All required tables are ready.")
-    except ClientError as error:
-        print(f"AWS ClientError: {error}")
-    except Exception as error:
-        print(f"Unexpected error: {error}")
+        tbl = db_resource.create_table(
+            TableName=MUSIC_TBL,
+
+            KeySchema=primary_key_schema,
+
+            AttributeDefinitions=key_definitions,
+
+            LocalSecondaryIndexes=lsi_definitions,
+
+            GlobalSecondaryIndexes=gsi_definitions,
+
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        print(f"[INFO] Waiting for '{MUSIC_TBL}' to become active...")
+        tbl.wait_until_exists()
+
+        print(f"[OK]   '{MUSIC_TBL}' is active and ready.")
+        print(f"       Primary key  → title (PK) + artist#year (SK)")
+        print(f"       GSI          → {GSI_BY_ARTIST}")
+        print(f"       LSI          → {LSI_BY_YEAR}")
+
+        return tbl
+
+    except ClientError as exc:
+        err_code = exc.response["Error"]["Code"]
+
+        if err_code == "ResourceInUseException":
+            print(f"[SKIP] '{MUSIC_TBL}' already exists — skipping creation.")
+            return db_resource.Table(MUSIC_TBL)
+
+        raise
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# SUBSCRIPTIONS TABLE
+# ───────────────────────────────────────────────────────────────────────────────
+
+def provision_subscriptions_table():
+
+    pk_schema = [
+        {"AttributeName": "email", "KeyType": "HASH"},
+        {"AttributeName": "song_id", "KeyType": "RANGE"},
+    ]
+
+    attr_defs = [
+        {"AttributeName": "email", "AttributeType": "S"},
+        {"AttributeName": "song_id", "AttributeType": "S"},
+    ]
+
+    try:
+        tbl = db_resource.create_table(
+            TableName=SUBS_TBL,
+
+            KeySchema=pk_schema,
+
+            AttributeDefinitions=attr_defs,
+
+            BillingMode="PAY_PER_REQUEST",
+        )
+
+        print(f"[INFO] Waiting for '{SUBS_TBL}' to become active...")
+        tbl.wait_until_exists()
+
+        print(f"[OK]   '{SUBS_TBL}' is active and ready.")
+        print(f"       Partition key → email")
+        print(f"       Sort key      → song_id")
+
+        return tbl
+
+    except ClientError as exc:
+        err_code = exc.response["Error"]["Code"]
+
+        if err_code == "ResourceInUseException":
+            print(f"[SKIP] '{SUBS_TBL}' already exists — skipping creation.")
+            return db_resource.Table(SUBS_TBL)
+
+        raise
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# MAIN
+# ───────────────────────────────────────────────────────────────────────────────
+
+def run():
+
+    provision_login_table()
+    provision_music_table()
+    provision_subscriptions_table()
+
+    print("\n[DONE] All DynamoDB tables are ready.")
 
 
 if __name__ == "__main__":
-    main()
+    run()

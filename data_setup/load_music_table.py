@@ -30,9 +30,11 @@ def load_json_file(file_name):
     except FileNotFoundError:
         print(f"File '{file_name}' not found.")
         return []
+
     except json.JSONDecodeError as error:
         print(f"Invalid JSON format in '{file_name}': {error}")
         return []
+
     except Exception as error:
         print(f"Unexpected error while reading '{file_name}': {error}")
         return []
@@ -40,29 +42,33 @@ def load_json_file(file_name):
 
 def build_music_item(song):
     """
-    Convert one song record from the JSON file into the format required
-    for the DynamoDB music table.
+    Convert one song record into the required DynamoDB format.
     """
+
     title = song.get("title", "").strip()
     artist = song.get("artist", "").strip()
     year = str(song.get("year", "")).strip()
     album = song.get("album", "").strip()
-    img_url = song.get("img_url", "").strip()
 
-    title_year_album = f"{title}#{year}#{album}"
-    year_album_title = f"{year}#{album}#{title}"
-    artist_year_album = f"{artist}#{year}#{album}"
+    # Rename img_url → image_url
+    image_url = song.get("img_url", "").strip()
+
+    # REQUIRED composite sort key for table schema
+    artist_year = f"{artist}#{year}"
 
     item = {
-        "artist": artist,
-        "title_year_album": title_year_album,
+        # ── Primary key fields ─────────────────────────────
         "title": title,
+        "artist#year": artist_year,
+
+        # ── Required assignment attributes ────────────────
+        "artist": artist,
         "year": year,
         "album": album,
-        "img_url": img_url,
-        "image_s3_key": "",  # Will be updated later after S3 upload
-        "year_album_title": year_album_title,
-        "artist_year_album": artist_year_album
+        "image_url": image_url,
+
+        # ── Optional helper field for later S3 updates ────
+        "image_s3_key": ""
     }
 
     return item
@@ -70,9 +76,9 @@ def build_music_item(song):
 
 def load_music_table():
     """
-    Read the JSON file, transform each song into the required DynamoDB
-    structure, and insert all songs into the music table.
+    Read the JSON file and insert all songs into DynamoDB.
     """
+
     songs = load_json_file(JSON_FILE_NAME)
 
     if not songs:
@@ -83,15 +89,20 @@ def load_music_table():
 
     try:
         with music_table.batch_writer() as batch:
+
             for song in songs:
+
                 item = build_music_item(song)
+
                 batch.put_item(Item=item)
+
                 inserted_count += 1
 
         print(f"\nSuccessfully inserted {inserted_count} songs into the music table.")
 
     except ClientError as error:
         print(f"AWS ClientError while loading music table: {error}")
+
     except Exception as error:
         print(f"Unexpected error while loading music table: {error}")
 
