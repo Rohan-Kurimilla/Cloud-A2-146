@@ -33,7 +33,7 @@ def get_unique_images():
     image_map = {}
 
     for item in items:
-        url = item.get("img_url")
+        url = item.get("image_url")
         artist = item.get("artist")
 
         if url and artist:
