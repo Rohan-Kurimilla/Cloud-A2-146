@@ -20,8 +20,8 @@ CORS(app)
 
 dynamodb = boto3.resource("dynamodb", region_name=AWS_REGION)
 
-login_table = dynamodb.Table(LOGIN_TABLE)
-music_table = dynamodb.Table(MUSIC_TABLE)
+login_table        = dynamodb.Table(LOGIN_TABLE)
+music_table        = dynamodb.Table(MUSIC_TABLE)
 subscriptions_table = dynamodb.Table(SUBSCRIPTIONS_TABLE)
 
 
@@ -34,16 +34,14 @@ def add_full_image_url(item):
 
 @app.route("/", methods=["GET"])
 def home():
-    return jsonify({
-        "message": "AWS Music Subscription Backend is running"
-    })
+    return jsonify({"message": "AWS Music Subscription Backend is running"})
 
 
 @app.route("/login", methods=["POST"])
 def login():
     data = request.get_json()
 
-    email = data.get("email")
+    email    = data.get("email")
     password = data.get("password")
 
     if not email or not password:
@@ -67,9 +65,9 @@ def login():
 def register():
     data = request.get_json()
 
-    email = data.get("email")
+    email     = data.get("email")
     user_name = data.get("user_name")
-    password = data.get("password")
+    password  = data.get("password")
 
     if not email or not user_name or not password:
         return jsonify({"success": False, "message": "missing required fields"}), 400
@@ -79,26 +77,17 @@ def register():
     if "Item" in response:
         return jsonify({"success": False, "message": "The email already exists"}), 409
 
-    login_table.put_item(
-        Item={
-            "email": email,
-            "user_name": user_name,
-            "password": password
-        }
-    )
+    login_table.put_item(Item={"email": email, "user_name": user_name, "password": password})
 
-    return jsonify({
-        "success": True,
-        "message": "registration successful"
-    })
+    return jsonify({"success": True, "message": "registration successful"})
 
 
 @app.route("/songs", methods=["GET"])
 def query_songs():
-    title = request.args.get("title", "").strip()
+    title  = request.args.get("title",  "").strip()
     artist = request.args.get("artist", "").strip()
-    year = request.args.get("year", "").strip()
-    album = request.args.get("album", "").strip()
+    year   = request.args.get("year",   "").strip()
+    album  = request.args.get("album",  "").strip()
 
     if not any([title, artist, year, album]):
         return jsonify({
@@ -108,22 +97,24 @@ def query_songs():
         }), 400
 
     try:
-        # Best case: artist query using partition key
+        # Artist search — uses the artist-index GSI (artist is NOT the base table PK)
+        # FIXED: added IndexName="artist-index"; without it DynamoDB raises ValidationException
         if artist:
             response = music_table.query(
+                IndexName="artist-index",
                 KeyConditionExpression=Key("artist").eq(artist)
             )
             songs = response.get("Items", [])
 
-        # Title-only or title-first search using GSI
+        # Title-only search — title IS the base table partition key; no index needed
+        # FIXED: removed the wrong IndexName="title-artist-year-album-gsi" (never existed)
         elif title:
             response = music_table.query(
-                IndexName="title-artist-year-album-gsi",
                 KeyConditionExpression=Key("title").eq(title)
             )
             songs = response.get("Items", [])
 
-        # Other cases need Scan
+        # Year / album only — need a full scan with filter
         else:
             filter_expression = None
 
@@ -137,19 +128,13 @@ def query_songs():
             response = music_table.scan(FilterExpression=filter_expression)
             songs = response.get("Items", [])
 
-        # Apply AND filters after initial efficient query
+        # Apply remaining AND filters in Python after the DynamoDB call
         filtered_songs = []
-
         for song in songs:
-            if title and song.get("title") != title:
-                continue
-            if artist and song.get("artist") != artist:
-                continue
-            if year and song.get("year") != year:
-                continue
-            if album and song.get("album") != album:
-                continue
-
+            if title  and song.get("title")  != title:  continue
+            if artist and song.get("artist") != artist: continue
+            if year   and song.get("year")   != year:   continue
+            if album  and song.get("album")  != album:  continue
             filtered_songs.append(add_full_image_url(song))
 
         if not filtered_songs:
@@ -180,24 +165,20 @@ def get_subscriptions():
         KeyConditionExpression=Key("email").eq(email)
     )
 
-    subscriptions = response.get("Items", [])
-    subscriptions = [add_full_image_url(item) for item in subscriptions]
+    subscriptions = [add_full_image_url(item) for item in response.get("Items", [])]
 
-    return jsonify({
-        "success": True,
-        "subscriptions": subscriptions
-    })
+    return jsonify({"success": True, "subscriptions": subscriptions})
 
 
 @app.route("/subscriptions", methods=["POST"])
 def add_subscription():
     data = request.get_json()
 
-    email = data.get("email")
-    title = data.get("title")
-    artist = data.get("artist")
-    year = data.get("year")
-    album = data.get("album")
+    email        = data.get("email")
+    title        = data.get("title")
+    artist       = data.get("artist")
+    year         = data.get("year")
+    album        = data.get("album")
     image_s3_key = data.get("image_s3_key", "")
 
     if not all([email, title, artist, year, album]):
@@ -207,43 +188,32 @@ def add_subscription():
 
     subscriptions_table.put_item(
         Item={
-            "email": email,
-            "music_id": music_id,
-            "title": title,
-            "artist": artist,
-            "year": year,
-            "album": album,
+            "email":       email,
+            "music_id":    music_id,
+            "title":       title,
+            "artist":      artist,
+            "year":        year,
+            "album":       album,
             "image_s3_key": image_s3_key
         }
     )
 
-    return jsonify({
-        "success": True,
-        "message": "subscription added successfully"
-    })
+    return jsonify({"success": True, "message": "subscription added successfully"}), 201
 
 
 @app.route("/subscriptions", methods=["DELETE"])
 def remove_subscription():
     data = request.get_json()
 
-    email = data.get("email")
+    email    = data.get("email")
     music_id = data.get("music_id")
 
     if not email or not music_id:
         return jsonify({"success": False, "message": "email and music_id are required"}), 400
 
-    subscriptions_table.delete_item(
-        Key={
-            "email": email,
-            "music_id": music_id
-        }
-    )
+    subscriptions_table.delete_item(Key={"email": email, "music_id": music_id})
 
-    return jsonify({
-        "success": True,
-        "message": "subscription removed successfully"
-    })
+    return jsonify({"success": True, "message": "subscription removed successfully"})
 
 
 if __name__ == "__main__":

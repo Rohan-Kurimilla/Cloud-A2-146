@@ -304,7 +304,7 @@ Expected output:
 [INFO] Waiting for 'subscriptions' to become active...
 [OK]   'subscriptions' is active and ready.
        Partition key → email
-       Sort key      → song_id
+       Sort key      → music_id
 
 [DONE] All DynamoDB tables are ready.
 ```
@@ -321,7 +321,7 @@ The complete table schemas created are:
 |-------|--------------|----------|---------|
 | `login` | `email` (String) | — | None |
 | `music` | `title` (String) | `artist#year` (String) | GSI: `artist-index` on `artist` + `year`; LSI: `title-year-index` on `title` + `year` |
-| `subscriptions` | `email` (String) | `song_id` (String) | None |
+| `subscriptions` | `email` (String) | `music_id` (String) | None |
 
 ### Step 1.3 — Seed the login table
 
@@ -705,6 +705,80 @@ ssh -i /path/to/sonata-key.pem ec2-user@<EC2_PUBLIC_IP> \
 > Flask application inside a Docker container on AWS Fargate, a serverless
 > container runtime that requires no EC2 instance management.
 
+### Before starting Part 3 — Pre-requirements checklist
+
+Complete every item in this checklist **before** running Step 3.1. Skipping any
+item will cause a specific step to fail and is the most common source of errors
+in the ECS deployment path.
+
+**1. Docker Desktop is installed and fully running**
+
+Open Docker Desktop from your Applications or Start menu. Wait until the whale
+icon in the system tray stops animating and shows "Docker Desktop is running."
+Then confirm Docker responds:
+
+```bash
+docker info
+```
+
+If this prints engine details, Docker is ready. If it returns an error such as
+`Cannot connect to the Docker daemon`, Docker has not finished starting — wait
+another 30 seconds and retry. Do not proceed to Step 3.1 until this command
+succeeds.
+
+**2. AWS CLI v2 is installed and credentials are valid (not expired)**
+
+```bash
+aws sts get-caller-identity
+```
+
+This must return your account ID and ARN. If you see `ExpiredTokenException`,
+refresh your credentials from the AWS Academy portal before continuing. See the
+[AWS Credentials section](#aws-credentials) for the full refresh procedure.
+
+**3. Your AWS account ID is noted**
+
+The ECS task definition requires your 12-digit account ID in two places. Retrieve
+it now and keep it handy:
+
+```bash
+aws sts get-caller-identity --query Account --output text
+```
+
+**4. Part 1 infrastructure is fully complete**
+
+All six Part 1 steps must be finished before ECS can serve data. Verify:
+
+```bash
+# All three tables should show ACTIVE
+aws dynamodb list-tables --query "TableNames"
+
+# The music table should have 137 items
+aws dynamodb scan --table-name music --select COUNT --query "Count"
+
+# The artists/ prefix should contain roughly 67 images
+aws s3 ls s3://your-bucket-name/artists/ | wc -l
+```
+
+If any of these checks fails, return to Part 1 and complete the missing steps
+before continuing.
+
+**5. Your S3 bucket name is updated in `ecs_backend/config.py`**
+
+Open `ecs_backend/config.py` and confirm `S3_BUCKET_NAME` matches the bucket
+you created in Step 1.1. If it still contains the placeholder value, update it
+now before building the Docker image — the bucket name is baked into the image
+at build time.
+
+**6. Internet access is available for the ECR image pull**
+
+The Fargate task pulls the image from ECR at launch time. Confirm that your
+chosen subnet has internet access (the default VPC's default subnets do). If
+you are using a custom VPC, ensure there is an internet gateway and the subnet's
+route table sends `0.0.0.0/0` traffic to it.
+
+---
+
 ### Step 3.1 — Create an ECR repository
 
 Amazon ECR (Elastic Container Registry) is where your Docker image is stored
@@ -940,14 +1014,123 @@ confirms the container can reach DynamoDB successfully.
 > function handles all application routes. API Gateway exposes a secure HTTPS
 > endpoint. There are no servers to manage and AWS handles all scaling automatically.
 
-### Before starting this section
+### Before starting Part 4 — Pre-requirements checklist
 
-Confirm Docker Desktop is fully started and that SAM CLI is installed:
+Complete every item in this checklist **before** running Step 4.3. Each item
+maps to a specific failure mode if skipped.
+
+**1. Docker Desktop is installed and fully running**
+
+SAM CLI builds the Lambda package inside a Docker container that replicates
+the Lambda runtime environment. Without Docker running, `sam build` exits
+immediately with `Error: Docker is not reachable`.
+
+Open Docker Desktop and wait until the whale icon in the system tray stops
+animating, then confirm:
 
 ```bash
-docker info   # Should print engine details — an error means Docker is not running
-sam --version # Should print SAM CLI version
+docker info
 ```
+
+This must print engine details — any error means Docker is not yet ready.
+Do not run `sam build` until this command succeeds.
+
+**2. AWS SAM CLI is installed**
+
+```bash
+sam --version
+```
+
+This must print a version number such as `SAM CLI, version 1.x.x`. If the
+command is not found, install SAM CLI from the
+[official guide](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
+before continuing.
+
+**3. AWS CLI v2 is installed and credentials are valid (not expired)**
+
+```bash
+aws sts get-caller-identity
+```
+
+This must return your account ID and ARN. If you see `ExpiredTokenException`,
+refresh your credentials from the AWS Academy portal before continuing. Expired
+credentials during `sam deploy` will leave a CloudFormation stack in a
+`ROLLBACK_COMPLETE` state that must be manually deleted before you can redeploy.
+See the [AWS Credentials section](#aws-credentials) for the full refresh procedure.
+
+**4. Your LabRole ARN is noted**
+
+Lambda functions in AWS Academy must be assigned the pre-created `LabRole` IAM
+role. You cannot create new IAM roles. Retrieve the ARN now:
+
+1. In the AWS Console navigate to **IAM → Roles**
+2. Search for `LabRole` and click on it
+3. Copy the **ARN** shown at the top — it follows this format:
+   `arn:aws:iam::123456789012:role/LabRole`
+
+You can also retrieve it with the CLI:
+
+```bash
+aws iam get-role --role-name LabRole --query "Role.Arn" --output text
+```
+
+Keep this value available — you pass it as a parameter in Step 4.4.
+
+**5. Part 1 infrastructure is fully complete**
+
+All six Part 1 steps must be finished before Lambda can serve data. Verify:
+
+```bash
+# All three tables should appear
+aws dynamodb list-tables --query "TableNames"
+
+# The music table should have 137 items
+aws dynamodb scan --table-name music --select COUNT --query "Count"
+
+# The artists/ prefix should contain roughly 67 images
+aws s3 ls s3://your-bucket-name/artists/ | wc -l
+```
+
+If any of these checks fails, return to Part 1 and complete the missing steps
+before continuing.
+
+**6. Your S3 bucket name is updated in `lambda_backend/lambda_function.py`**
+
+Open `lambda_backend/lambda_function.py` and confirm the `S3_BUCKET_NAME`
+constant at the top of the file matches the bucket you created in Step 1.1.
+This value is packaged into the Lambda ZIP at build time. Deploying with the
+wrong bucket name means all song images will return empty URLs.
+
+**7. Both required files are present in `lambda_backend/`**
+
+```bash
+ls lambda_backend/
+```
+
+You must see both `lambda_function.py` and `template.yaml`. If either is
+missing, restore it from version control before running `sam build`.
+
+**8. No existing failed CloudFormation stack with the same name**
+
+If a previous `sam deploy` attempt failed, AWS may have left a stack in
+`ROLLBACK_COMPLETE` state. A stack in this state blocks all future deployments
+with the same name. Check and delete it if necessary:
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name music-subscription-lambda \
+  --query "Stacks[0].StackStatus" --output text
+```
+
+If the output is `ROLLBACK_COMPLETE`, delete the stack before retrying:
+
+```bash
+aws cloudformation delete-stack --stack-name music-subscription-lambda
+aws cloudformation wait stack-delete-complete --stack-name music-subscription-lambda
+echo "Stack deleted. Safe to redeploy."
+```
+
+---
 
 ### Step 4.1 — Confirm the Lambda files are in place
 
@@ -1582,6 +1765,19 @@ a rebuild and upload:
 
 ```bash
 sam build --use-container && sam deploy --force-upload
+```
+
+---
+
+### `sam deploy` fails with `ROLLBACK_COMPLETE`
+A previous deployment attempt failed and left the CloudFormation stack in an
+unrecoverable state. Delete the stuck stack before redeploying:
+
+```bash
+aws cloudformation delete-stack --stack-name music-subscription-lambda
+aws cloudformation wait stack-delete-complete --stack-name music-subscription-lambda
+sam build --use-container && sam deploy --guided \
+  --parameter-overrides LabRoleArn=arn:aws:iam::<YOUR_ACCOUNT_ID>:role/LabRole
 ```
 
 ---

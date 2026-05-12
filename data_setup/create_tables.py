@@ -63,15 +63,15 @@ def provision_login_table():
 def provision_music_table():
 
     key_definitions = [
-        {"AttributeName": "title", "AttributeType": "S"},
-        {"AttributeName": "artist#year", "AttributeType": "S"},
-        {"AttributeName": "artist", "AttributeType": "S"},
-        {"AttributeName": "year", "AttributeType": "S"},
+        {"AttributeName": "title",      "AttributeType": "S"},
+        {"AttributeName": "artist#year","AttributeType": "S"},
+        {"AttributeName": "artist",     "AttributeType": "S"},
+        {"AttributeName": "year",       "AttributeType": "S"},
     ]
 
     primary_key_schema = [
-        {"AttributeName": "title", "KeyType": "HASH"},
-        {"AttributeName": "artist#year", "KeyType": "RANGE"},
+        {"AttributeName": "title",      "KeyType": "HASH"},
+        {"AttributeName": "artist#year","KeyType": "RANGE"},
     ]
 
     gsi_definitions = [
@@ -80,7 +80,7 @@ def provision_music_table():
 
             "KeySchema": [
                 {"AttributeName": "artist", "KeyType": "HASH"},
-                {"AttributeName": "year", "KeyType": "RANGE"},
+                {"AttributeName": "year",   "KeyType": "RANGE"},
             ],
 
             "Projection": {
@@ -95,7 +95,7 @@ def provision_music_table():
 
             "KeySchema": [
                 {"AttributeName": "title", "KeyType": "HASH"},
-                {"AttributeName": "year", "KeyType": "RANGE"},
+                {"AttributeName": "year",  "KeyType": "RANGE"},
             ],
 
             "Projection": {
@@ -142,17 +142,18 @@ def provision_music_table():
 # ───────────────────────────────────────────────────────────────────────────────
 # SUBSCRIPTIONS TABLE
 # ───────────────────────────────────────────────────────────────────────────────
+# FIXED: sort key is music_id (was song_id — mismatched every backend put/delete)
 
 def provision_subscriptions_table():
 
     pk_schema = [
-        {"AttributeName": "email", "KeyType": "HASH"},
-        {"AttributeName": "song_id", "KeyType": "RANGE"},
+        {"AttributeName": "email",    "KeyType": "HASH"},
+        {"AttributeName": "music_id", "KeyType": "RANGE"},   # ← fixed: was song_id
     ]
 
     attr_defs = [
-        {"AttributeName": "email", "AttributeType": "S"},
-        {"AttributeName": "song_id", "AttributeType": "S"},
+        {"AttributeName": "email",    "AttributeType": "S"},
+        {"AttributeName": "music_id", "AttributeType": "S"},  # ← fixed: was song_id
     ]
 
     try:
@@ -171,7 +172,7 @@ def provision_subscriptions_table():
 
         print(f"[OK]   '{SUBS_TBL}' is active and ready.")
         print(f"       Partition key → email")
-        print(f"       Sort key      → song_id")
+        print(f"       Sort key      → music_id")
 
         return tbl
 

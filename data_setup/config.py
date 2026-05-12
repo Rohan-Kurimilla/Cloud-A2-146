@@ -8,12 +8,12 @@ MUSIC_TABLE = "music"
 SUBSCRIPTIONS_TABLE = "subscriptions"
 
 # Use your actual S3 bucket name later
-S3_BUCKET_NAME = "music-app-images-kingston-4156256-2026"
+S3_BUCKET_NAME = "myassignment2bucket-ashup"
 
 # These are placeholders for now.
 # Replace them later when your group leader/base identity is decided.
-GROUP_BASE_STUDENT_ID = "s1234567"
-GROUP_BASE_NAME = "GroupUser"
+GROUP_BASE_STUDENT_ID = "s4109620"
+GROUP_BASE_NAME = "Ashutosh Panda"
 
 # Seed passwords based on the assignment pattern
 SEED_PASSWORDS = [

@@ -1,0 +1,117 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+
+Description: >
+  Sonata Music Subscription App — Lambda + API Gateway backend
+
+Globals:
+  Function:
+    Runtime: python3.10
+    Timeout: 30
+    MemorySize: 256
+    Environment:
+      Variables:
+        AWS_REGION_NAME: us-east-1
+  Api:
+    Cors:
+      AllowMethods: "'GET,POST,DELETE,OPTIONS'"
+      AllowHeaders: "'Content-Type'"
+      AllowOrigin: "'*'"
+
+Parameters:
+  LabRoleArn:
+    Type: String
+    Description: >
+      ARN of the LabRole IAM role (from IAM -> Roles -> LabRole).
+      Format: arn:aws:iam::<YOUR_ACCOUNT_ID>:role/LabRole
+
+Resources:
+
+  MusicApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: music-subscription-api
+      StageName: prod
+
+  MusicSubscriptionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: music-subscription-handler
+      CodeUri: .
+      Handler: lambda_function.lambda_handler
+      Role: !Ref LabRoleArn
+      Events:
+        Home:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MusicApi
+            Path: /
+            Method: GET
+        Login:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MusicApi
+            Path: /login
+            Method: POST
+        LoginOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MusicApi
+            Path: /login
+            Method: OPTIONS
+        Register:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MusicApi
+            Path: /register
+            Method: POST
+        RegisterOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MusicApi
+            Path: /register
+            Method: OPTIONS
+        QuerySongs:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MusicApi
+            Path: /songs
+            Method: GET
+        QuerySongsOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MusicApi
+            Path: /songs
+            Method: OPTIONS
+        GetSubscriptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MusicApi
+            Path: /subscriptions
+            Method: GET
+        AddSubscription:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MusicApi
+            Path: /subscriptions
+            Method: POST
+        DeleteSubscription:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MusicApi
+            Path: /subscriptions
+            Method: DELETE
+        SubscriptionsOptions:
+          Type: Api
+          Properties:
+            RestApiId: !Ref MusicApi
+            Path: /subscriptions
+            Method: OPTIONS
+
+Outputs:
+  ApiBaseUrl:
+    Description: "Live API Gateway base URL — paste this into frontend/config.js"
+    Value: !Sub "https://${MusicApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  LambdaFunctionName:
+    Description: "Lambda function name"
+    Value: !Ref MusicSubscriptionFunction
