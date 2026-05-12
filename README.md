@@ -379,7 +379,7 @@ Expected output:
 
 ```
 Fetching unique images...
-Found 67 unique images.
+Found 71 unique images.
 
 Uploaded: artists/TaylorSwift.jpg
 Uploaded: artists/JackJohnson.jpg
@@ -394,7 +394,7 @@ to be processed — the failure is non-fatal and that artist's songs will simply
 display a placeholder icon in the UI.
 
 **Verify in the AWS Console:** Navigate to **S3 → your-bucket-name → artists/**.
-You should see approximately 67 `.jpg` files.
+You should see approximately 71 `.jpg` files.
 
 ### Step 1.6 — Write S3 image keys back to DynamoDB
 
@@ -603,7 +603,14 @@ To check the Flask log at any time:
 ```bash
 tail -f ~/flask.log
 ```
-
+Note: Before starting the frontend 
+```bash
+cd ~/frontend
+vi config.js
+```
+press i
+then edit the const API_BASE_URL = "http://<EC2_PUBLIC_IP>:5000";
+then press Esc and then :wq to save and quit
 ### Step 2.8 — Start the frontend file server
 
 Serve the static frontend files using Python's built-in HTTP server on port 8000:
