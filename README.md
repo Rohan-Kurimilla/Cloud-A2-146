@@ -16,10 +16,11 @@ If you are setting this project up from scratch, follow every step in this exact
 3. [Set up AWS credentials](#aws-credentials)
 4. [Run the infrastructure scripts](#part-1--aws-infrastructure-setup) — DynamoDB + S3
 5. Deploy a backend (pick one):
-   - [Lambda + API Gateway](#part-2--lambda--api-gateway-backend-recommended) ← Recommended
+   - [EC2 Flask Backend](#part-2--ec2-flask-backend) ← Simplest to get running
    - [ECS Fargate](#part-3--ecs-fargate-backend)
-6. [Deploy the frontend](#part-4--frontend-deployment)
-7. [Verify everything works](#part-5--end-to-end-verification)
+   - [Lambda + API Gateway](#part-4--lambda--api-gateway-backend-recommended) ← Recommended for production
+6. [Deploy the frontend](#part-5--frontend-deployment)
+7. [Verify everything works](#part-6--end-to-end-verification)
 
 ---
 
@@ -39,9 +40,10 @@ Cloud-A2-146/
 │   ├── bucket-policy.json              # S3 public read policy template
 │   └── 2026a2_songs.json               # Source music dataset (137 songs)
 │
-├── lambda_backend/
-│   ├── lambda_function.py              # ✅ Complete — single-file Lambda handler
-│   └── template.yaml                   # SAM template — API Gateway + Lambda
+├── backend_flask/                      # ✅ Complete — EC2 Flask backend
+│   ├── app.py                          # Flask application and routes
+│   ├── config.py                       # AWS constants
+│   └── requirements.txt                # flask, flask-cors, boto3
 │
 ├── ecs_backend/                        # ✅ Complete — Dockerised Flask app
 │   ├── app.py                          # Flask application and routes
@@ -49,10 +51,9 @@ Cloud-A2-146/
 │   ├── requirements.txt                # flask, flask-cors, boto3
 │   └── Dockerfile                      # Container definition, runs Flask on port 80
 │
-├── backend_flask/                      # EC2 Flask backend — not used in submission
-│   ├── app.py
-│   ├── config.py
-│   └── requirements.txt
+├── lambda_backend/
+│   ├── lambda_function.py              # ✅ Complete — single-file Lambda handler
+│   └── template.yaml                   # SAM template — API Gateway + Lambda
 │
 └── frontend/                           # Static web UI — "Sonata"
     ├── login.html                      # Login page
@@ -189,6 +190,7 @@ three locations below. All three must be identical.
 | `data_setup/config.py` | `S3_BUCKET_NAME = "your-bucket-name"` |
 | `ecs_backend/config.py` | `S3_BUCKET_NAME = "your-bucket-name"` |
 | `lambda_backend/lambda_function.py` | `S3_BUCKET_NAME = "your-bucket-name"` |
+| `backend_flask/config.py` | `S3_BUCKET_NAME = "your-bucket-name"` |
 
 Also update `data_setup/bucket-policy.json` to use the same bucket name in the
 `Resource` field:
@@ -229,6 +231,9 @@ After deploying your chosen backend, you will receive a base URL. Open
 frontend:
 
 ```javascript
+// EC2 Flask backend:
+const API_BASE_URL = "http://<ec2-public-ip>:5000";
+
 // Lambda + API Gateway:
 const API_BASE_URL = "https://<api-id>.execute-api.us-east-1.amazonaws.com/prod";
 
@@ -419,217 +424,278 @@ Finished updating image_s3_key for all music items.
 
 ---
 
-## Part 2 — Lambda + API Gateway Backend (Recommended)
+## Part 2 — EC2 Flask Backend
 
-> ✅ This is the recommended and complete deployment path. A single Lambda
-> function handles all application routes. API Gateway exposes a secure HTTPS
-> endpoint. There are no servers to manage and AWS handles all scaling automatically.
+> ✅ This deployment path runs the Flask application directly on an Amazon EC2
+> virtual machine. It is the most straightforward option to understand and debug,
+> with no containerisation or serverless infrastructure required. The Flask API
+> is served on port 5000 and the static frontend is served on port 8000, both
+> from the same instance.
 
-### Before starting this section
+### Step 2.1 — Launch an EC2 instance
 
-Confirm Docker Desktop is fully started and that SAM CLI is installed:
+**2.1.1 — Open the EC2 Console**
 
-```bash
-docker info   # Should print engine details — an error means Docker is not running
-sam --version # Should print SAM CLI version
-```
+In the AWS Management Console navigate to **EC2 → Instances → Launch instances**.
 
-### Step 2.1 — Confirm the Lambda files are in place
+**2.1.2 — Configure the instance**
 
-Your `lambda_backend/` folder must contain both of these files:
+Fill in each section as follows:
 
-```
-lambda_backend/
-├── lambda_function.py   # Application handler — all routes implemented
-└── template.yaml        # SAM deployment template — defines API Gateway + Lambda
-```
+| Setting | Value |
+|---------|-------|
+| Name | `sonata-backend` |
+| Application and OS Images | **Amazon Linux 2023 AMI** (free tier eligible) |
+| Instance type | **t3.micro** (free tier eligible) |
+| Key pair | Select an existing key pair, or click **Create new key pair**, name it `sonata-key`, choose RSA and `.pem` format, then click **Create key pair** and save the downloaded `.pem` file somewhere safe — you cannot download it again |
 
-No `requirements.txt` is needed. `boto3` is pre-installed in the Lambda Python
-runtime and no additional dependencies are required.
+**2.1.3 — Configure the security group**
 
-### Step 2.2 — Get your LabRole ARN
+Under **Network settings**, click **Edit** and configure inbound rules as follows.
+Create a new security group named `sonata-sg` with the following three rules:
 
-Lambda functions deployed in AWS Academy must be assigned the pre-created
-`LabRole` IAM role. You cannot create new IAM roles in Academy accounts.
+| Type | Protocol | Port range | Source | Description |
+|------|----------|-----------|--------|-------------|
+| SSH | TCP | 22 | My IP | Terminal access |
+| Custom TCP | TCP | 5000 | Anywhere (0.0.0.0/0) | Flask backend API |
+| Custom TCP | TCP | 8000 | Anywhere (0.0.0.0/0) | Frontend static file server |
 
-1. In the AWS Console navigate to **IAM → Roles**
-2. Search for `LabRole` and click on it
-3. Copy the **ARN** displayed at the top of the page
+**2.1.4 — Attach the IAM instance profile**
 
-The ARN follows this format:
+Expand **Advanced details** and locate the **IAM instance profile** dropdown.
+Select **LabRole** from the list. This grants the instance permission to access
+DynamoDB and S3 without embedding credentials in the code.
 
-```
-arn:aws:iam::123456789012:role/LabRole
-```
+**2.1.5 — Launch the instance**
 
-Keep this value available — you will pass it as a parameter in Step 2.3.
+Leave all remaining settings at their defaults and click **Launch instance**.
+Wait approximately 2 minutes for the instance state to show **Running** and the
+status checks to show **2/2 checks passed** before proceeding.
 
-To retrieve your account ID separately:
+**2.1.6 — Note the public IP address**
 
-```bash
-aws sts get-caller-identity --query Account --output text
-```
+In the EC2 Console click on your instance and copy the **Public IPv4 address**
+displayed in the instance summary panel. You will need this in subsequent steps.
 
-### Step 2.3 — Build the Lambda deployment package
+### Step 2.2 — Prepare your SSH key
 
-SAM packages your application code inside a Docker container that replicates
-the Lambda runtime environment. This ensures the package is compatible with
-the live Lambda execution environment. Docker Desktop must be running before
-executing this command.
-
-```bash
-cd lambda_backend
-sam build --use-container
-```
-
-Expected output:
-
-```
-Building codeuri: . runtime: python3.10 metadata: {} architecture: x86_64
-Running PythonPipBuilder:ResolveDependencies
-Running PythonPipBuilder:CopySource
-
-Build Succeeded
-
-Built Artifacts  : .aws-sam/build
-Built Template   : .aws-sam/build/template.yaml
-```
-
-> If `sam build` fails with `Error: Docker is not reachable`, Docker Desktop
-> has not finished starting. Wait until the whale icon in the system tray stops
-> animating, then retry.
-
-### Step 2.4 — Deploy to AWS (first time — guided wizard)
-
-```bash
-sam deploy --guided \
-  --parameter-overrides LabRoleArn=arn:aws:iam::<YOUR_ACCOUNT_ID>:role/LabRole
-```
-
-Replace `<YOUR_ACCOUNT_ID>` with your actual 12-digit AWS account ID.
-
-The wizard will prompt you with a series of configuration questions. Answer them
-exactly as shown in the table below:
-
-| Prompt | Answer |
-|--------|--------|
-| Stack Name [sam-app] | `music-subscription-lambda` |
-| AWS Region [us-east-1] | Press **Enter** to accept |
-| Parameter LabRoleArn | Paste your full LabRole ARN |
-| Confirm changes before deploy [Y/n] | `y` |
-| Allow SAM CLI IAM role creation [Y/n] | `n` |
-| Disable rollback [y/N] | `n` |
-| `MusicSubscriptionFunction` may not have authorization defined, Is this okay? [y/N] | `y` — repeat this for each of the approximately 11 route prompts |
-| Save arguments to configuration file [Y/n] | `y` |
-| SAM configuration file [samconfig.toml] | Press **Enter** to accept |
-| SAM configuration environment [default] | Press **Enter** to accept |
-
-SAM will display a changeset preview listing every AWS resource it will create
-— the Lambda function, API Gateway, all routes, CloudWatch log group, and IAM
-bindings. When asked `Deploy this changeset? [y/N]` type `y`.
-
-Deployment takes approximately 1–3 minutes. On success you will see:
-
-```
-Successfully created/updated stack - music-subscription-lambda in us-east-1
-```
-
-### Step 2.5 — Retrieve your API URL
-
-Immediately after a successful deployment SAM prints an Outputs table to the
-terminal:
-
-```
-------------------------------------------------------------------------------------
-Outputs
-------------------------------------------------------------------------------------
-Key         ApiBaseUrl
-Description Live API Gateway base URL — paste this into frontend/config.js
-Value       https://nsf6ua05d6.execute-api.us-east-1.amazonaws.com/prod
-------------------------------------------------------------------------------------
-```
-
-Copy the `Value`. If you need to retrieve it later at any time:
-
-```bash
-aws cloudformation describe-stacks \
-  --stack-name music-subscription-lambda \
-  --query "Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue" \
-  --output text
-```
-
-### Step 2.6 — Update the frontend config
-
-Open `frontend/config.js` and set your API base URL:
-
-```javascript
-const API_BASE_URL = "https://nsf6ua05d6.execute-api.us-east-1.amazonaws.com/prod";
-```
-
-### Step 2.7 — Smoke test the live API
-
-Run a quick set of manual tests to confirm the deployed API is responding
-correctly before deploying the frontend.
+Before connecting, the `.pem` key file must have restricted permissions.
+Skip this step on Windows — PowerShell handles permissions differently.
 
 **Linux / Mac:**
 
 ```bash
-export API="https://nsf6ua05d6.execute-api.us-east-1.amazonaws.com/prod"
+chmod 400 /path/to/sonata-key.pem
+```
 
-# Health check
-curl $API/
+### Step 2.3 — Upload the backend files to the instance
 
-# Login with a seed user
-curl -s -X POST $API/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"s1234567+0@student.rmit.edu.au","password":"012345"}'
+Upload the entire `backend_flask/` directory from your local machine to the EC2
+instance using `scp`. Replace `<EC2_PUBLIC_IP>` with your instance's actual public
+IP and adjust the path to your `.pem` file as needed.
 
-# Query songs by artist
-curl -s "$API/songs?artist=Taylor+Swift"
+**Linux / Mac:**
+
+```bash
+scp -i /path/to/sonata-key.pem -r backend_flask/ \
+  ec2-user@<EC2_PUBLIC_IP>:~/backend_flask
 ```
 
 **Windows PowerShell:**
 
 ```powershell
-$API = "https://nsf6ua05d6.execute-api.us-east-1.amazonaws.com/prod"
+scp -i C:\path\to\sonata-key.pem -r backend_flask/ `
+  ec2-user@<EC2_PUBLIC_IP>:~/backend_flask
+```
+
+Expected output — you will see a progress line for each file transferred:
+
+```
+app.py                  100%  4321     1.2MB/s   00:00
+config.py               100%   312   450.0KB/s   00:00
+requirements.txt        100%    27   150.0KB/s   00:00
+```
+
+### Step 2.4 — Upload the frontend files to the instance
+
+Upload the entire `frontend/` directory in the same way. Make sure you have
+already updated `frontend/config.js` with `http://<EC2_PUBLIC_IP>:5000` before
+uploading.
+
+**Linux / Mac:**
+
+```bash
+scp -i /path/to/sonata-key.pem -r frontend/ \
+  ec2-user@<EC2_PUBLIC_IP>:~/frontend
+```
+
+**Windows PowerShell:**
+
+```powershell
+scp -i C:\path\to\sonata-key.pem -r frontend/ `
+  ec2-user@<EC2_PUBLIC_IP>:~/frontend
+```
+
+### Step 2.5 — Connect to the instance via SSH
+
+**Linux / Mac:**
+
+```bash
+ssh -i /path/to/sonata-key.pem ec2-user@<EC2_PUBLIC_IP>
+```
+
+**Windows PowerShell:**
+
+```powershell
+ssh -i C:\path\to\sonata-key.pem ec2-user@<EC2_PUBLIC_IP>
+```
+
+You are now logged into the instance. All subsequent commands in this section
+are run inside this SSH session.
+
+### Step 2.6 — Install Python dependencies on the instance
+
+```bash
+# Update system packages
+sudo dnf update -y
+
+# Install pip if not already present
+sudo dnf install -y python3-pip
+
+# Navigate to the backend directory
+cd ~/backend_flask
+
+# Install required Python packages
+pip3 install flask flask-cors boto3
+```
+
+Verify the installation completed without errors:
+
+```bash
+python3 -c "import flask, boto3; print('Dependencies installed successfully')"
+```
+
+### Step 2.7 — Start the Flask backend
+
+Run the Flask application in the background so it keeps running after you close
+the terminal:
+
+```bash
+cd ~/backend_flask
+nohup python3 app.py > ~/flask.log 2>&1 &
+echo "Flask started. PID: $!"
+```
+
+Confirm the server is listening on port 5000:
+
+```bash
+curl http://localhost:5000/
+```
+
+Expected response:
+
+```json
+{"message": "AWS Music Subscription Backend is running"}
+```
+
+To check the Flask log at any time:
+
+```bash
+tail -f ~/flask.log
+```
+
+### Step 2.8 — Start the frontend file server
+
+Serve the static frontend files using Python's built-in HTTP server on port 8000:
+
+```bash
+cd ~/frontend
+nohup python3 -m http.server 8000 > ~/frontend.log 2>&1 &
+echo "Frontend server started on port 8000."
+```
+
+### Step 2.9 — Access the live application
+
+Your application is now accessible at the following URLs. Replace `<EC2_PUBLIC_IP>`
+with your instance's public IP address:
+
+| Service | URL |
+|---------|-----|
+| Frontend (login page) | `http://<EC2_PUBLIC_IP>:8000/login.html` |
+| Backend API (health check) | `http://<EC2_PUBLIC_IP>:5000/` |
+
+Open the frontend URL in your browser to begin testing.
+
+### Step 2.10 — Smoke test the live API
+
+Run these commands from your **local** terminal (not inside the SSH session)
+to confirm the API is accessible from the public internet:
+
+**Linux / Mac:**
+
+```bash
+export EC2="http://<EC2_PUBLIC_IP>:5000"
 
 # Health check
-Invoke-RestMethod -Uri "$API/"
+curl $EC2/
+
+# Login with a seed user
+curl -s -X POST $EC2/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"s1234567+0@student.rmit.edu.au","password":"012345"}'
+
+# Query songs by artist
+curl -s "$EC2/songs?artist=Taylor+Swift"
+```
+
+**Windows PowerShell:**
+
+```powershell
+$EC2 = "http://<EC2_PUBLIC_IP>:5000"
+
+# Health check
+Invoke-RestMethod -Uri "$EC2/"
 
 # Login
-Invoke-RestMethod -Method POST -Uri "$API/login" `
+Invoke-RestMethod -Method POST -Uri "$EC2/login" `
   -ContentType "application/json" `
   -Body '{"email":"s1234567+0@student.rmit.edu.au","password":"012345"}'
 
 # Song query
-Invoke-RestMethod -Uri "$API/songs?artist=Taylor Swift"
+Invoke-RestMethod -Uri "$EC2/songs?artist=Taylor Swift"
 ```
 
-All three commands should return valid JSON responses. If the login returns
-`{"success": true}` and the song query returns a `songs` array, the backend is
-fully operational.
+A `{"success": true}` login response and a `songs` array from the query confirm
+the backend is fully operational and communicating with DynamoDB.
 
-### Step 2.8 — Subsequent deploys after code changes
+### Stopping the EC2 servers
 
-After the first deployment, SAM saves all your configuration to `samconfig.toml`
-in the `lambda_backend/` directory. All future deploys after code changes are
-a single command with no interactive prompts:
+To stop both processes running on the instance:
 
 ```bash
-sam build --use-container && sam deploy
+# Stop Flask backend
+pkill -f "python3 app.py"
+
+# Stop frontend file server
+pkill -f "http.server 8000"
 ```
 
-### Tear down the Lambda stack
+To restart them after a reboot, repeat Steps 2.7 and 2.8.
 
-To remove all Lambda and API Gateway resources when no longer needed:
+### Re-uploading files after changes
+
+If you modify any backend or frontend file locally, re-upload only the changed
+files using `scp` with the individual file path instead of the directory:
 
 ```bash
-sam delete --stack-name music-subscription-lambda
-```
+# Re-upload a single file
+scp -i /path/to/sonata-key.pem backend_flask/app.py \
+  ec2-user@<EC2_PUBLIC_IP>:~/backend_flask/app.py
 
-This removes the Lambda function, API Gateway, and CloudFormation stack.
-DynamoDB tables and the S3 bucket are **not** deleted as they are shared
-infrastructure.
+# Then restart Flask on the instance
+ssh -i /path/to/sonata-key.pem ec2-user@<EC2_PUBLIC_IP> \
+  "pkill -f 'python3 app.py'; cd ~/backend_flask && nohup python3 app.py > ~/flask.log 2>&1 &"
+```
 
 ---
 
@@ -638,9 +704,6 @@ infrastructure.
 > ✅ The ECS backend (`ecs_backend/`) is complete. This deployment path runs the
 > Flask application inside a Docker container on AWS Fargate, a serverless
 > container runtime that requires no EC2 instance management.
->
-> ⚠️ The most common failure with ECS is the task IAM role not having DynamoDB
-> and S3 permissions attached. Complete Step 3.2 before launching any tasks.
 
 ### Step 3.1 — Create an ECR repository
 
@@ -669,24 +732,7 @@ export ECR_URI="123456789012.dkr.ecr.us-east-1.amazonaws.com/music-subscription-
 $ECR_URI = "123456789012.dkr.ecr.us-east-1.amazonaws.com/music-subscription-api"
 ```
 
-### Step 3.2 — Attach DynamoDB and S3 permissions to LabRole
-
-This step must be completed before running any ECS tasks. Without these
-permissions, every API call the container makes to DynamoDB will fail with
-`AccessDeniedException` even though the container itself starts and runs
-successfully.
-
-1. In the AWS Console navigate to **IAM → Roles**
-2. Search for `LabRole` and click on it
-3. Click **Add permissions → Attach policies**
-4. Search for and tick **`AmazonDynamoDBFullAccess`**
-5. Search for and tick **`AmazonS3ReadOnlyAccess`**
-6. Click **Add permissions**
-
-After completing this, verify both policies appear under **LabRole → Permissions
-tab** before proceeding.
-
-### Step 3.3 — Build and push the Docker image
+### Step 3.2 — Build and push the Docker image
 
 ```bash
 cd ecs_backend
@@ -714,7 +760,7 @@ aws ecr list-images --repository-name music-subscription-api
 
 The output should show one image with tag `latest`.
 
-### Step 3.4 — Create the ECS cluster and CloudWatch log group
+### Step 3.3 — Create the ECS cluster and CloudWatch log group
 
 ```bash
 # Create the ECS cluster
@@ -724,10 +770,12 @@ aws ecs create-cluster --cluster-name music-app-cluster
 aws logs create-log-group --log-group-name /ecs/music-subscription
 ```
 
-### Step 3.5 — Register the ECS task definition
+### Step 3.4 — Register the ECS task definition
 
 Create a file named `task-def.json` in your current directory. Replace both
-occurrences of `<YOUR_ACCOUNT_ID>` and update the ECR image URI with your own:
+occurrences of `<YOUR_ACCOUNT_ID>` and update the ECR image URI with your own.
+The task and execution roles are both set to `LabRole`, which already has the
+required DynamoDB and S3 permissions attached.
 
 ```json
 {
@@ -773,7 +821,7 @@ aws ecs list-task-definitions
 
 You should see `music-subscription-task:1` in the output.
 
-### Step 3.6 — Identify your default VPC and a public subnet
+### Step 3.5 — Identify your default VPC and a public subnet
 
 Fargate tasks launched with a public IP must be placed in a public subnet. Use
 the default VPC for simplicity.
@@ -792,7 +840,7 @@ SUBNET_ID=$(aws ec2 describe-subnets \
 echo "Public Subnet: $SUBNET_ID"
 ```
 
-### Step 3.7 — Create a security group and open port 80
+### Step 3.6 — Create a security group and open port 80
 
 ```bash
 # Create the security group
@@ -811,7 +859,7 @@ aws ec2 authorize-security-group-ingress \
   --cidr 0.0.0.0/0
 ```
 
-### Step 3.8 — Create the ECS service and launch the container
+### Step 3.7 — Create the ECS service and launch the container
 
 ```bash
 aws ecs create-service \
@@ -835,7 +883,7 @@ aws ecs wait services-stable \
 echo "ECS service is stable and running."
 ```
 
-### Step 3.9 — Retrieve the container's public IP address
+### Step 3.8 — Retrieve the container's public IP address
 
 ```bash
 # Get the ARN of the running task
@@ -861,7 +909,7 @@ PUBLIC_IP=$(aws ec2 describe-network-interfaces \
 echo "ECS Public IP: $PUBLIC_IP"
 ```
 
-### Step 3.10 — Update the frontend config and smoke test
+### Step 3.9 — Update the frontend config and smoke test
 
 Open `frontend/config.js`:
 
@@ -886,7 +934,221 @@ confirms the container can reach DynamoDB successfully.
 
 ---
 
-## Part 4 — Frontend Deployment
+## Part 4 — Lambda + API Gateway Backend (Recommended)
+
+> ✅ This is the recommended and complete deployment path. A single Lambda
+> function handles all application routes. API Gateway exposes a secure HTTPS
+> endpoint. There are no servers to manage and AWS handles all scaling automatically.
+
+### Before starting this section
+
+Confirm Docker Desktop is fully started and that SAM CLI is installed:
+
+```bash
+docker info   # Should print engine details — an error means Docker is not running
+sam --version # Should print SAM CLI version
+```
+
+### Step 4.1 — Confirm the Lambda files are in place
+
+Your `lambda_backend/` folder must contain both of these files:
+
+```
+lambda_backend/
+├── lambda_function.py   # Application handler — all routes implemented
+└── template.yaml        # SAM deployment template — defines API Gateway + Lambda
+```
+
+No `requirements.txt` is needed. `boto3` is pre-installed in the Lambda Python
+runtime and no additional dependencies are required.
+
+### Step 4.2 — Get your LabRole ARN
+
+Lambda functions deployed in AWS Academy must be assigned the pre-created
+`LabRole` IAM role. You cannot create new IAM roles in Academy accounts.
+
+1. In the AWS Console navigate to **IAM → Roles**
+2. Search for `LabRole` and click on it
+3. Copy the **ARN** displayed at the top of the page
+
+The ARN follows this format:
+
+```
+arn:aws:iam::123456789012:role/LabRole
+```
+
+Keep this value available — you will pass it as a parameter in Step 4.3.
+
+To retrieve your account ID separately:
+
+```bash
+aws sts get-caller-identity --query Account --output text
+```
+
+### Step 4.3 — Build the Lambda deployment package
+
+SAM packages your application code inside a Docker container that replicates
+the Lambda runtime environment. This ensures the package is compatible with
+the live Lambda execution environment. Docker Desktop must be running before
+executing this command.
+
+```bash
+cd lambda_backend
+sam build --use-container
+```
+
+Expected output:
+
+```
+Building codeuri: . runtime: python3.10 metadata: {} architecture: x86_64
+Running PythonPipBuilder:ResolveDependencies
+Running PythonPipBuilder:CopySource
+
+Build Succeeded
+
+Built Artifacts  : .aws-sam/build
+Built Template   : .aws-sam/build/template.yaml
+```
+
+> If `sam build` fails with `Error: Docker is not reachable`, Docker Desktop
+> has not finished starting. Wait until the whale icon in the system tray stops
+> animating, then retry.
+
+### Step 4.4 — Deploy to AWS (first time — guided wizard)
+
+```bash
+sam deploy --guided \
+  --parameter-overrides LabRoleArn=arn:aws:iam::<YOUR_ACCOUNT_ID>:role/LabRole
+```
+
+Replace `<YOUR_ACCOUNT_ID>` with your actual 12-digit AWS account ID.
+
+The wizard will prompt you with a series of configuration questions. Answer them
+exactly as shown in the table below:
+
+| Prompt | Answer |
+|--------|--------|
+| Stack Name [sam-app] | `music-subscription-lambda` |
+| AWS Region [us-east-1] | Press **Enter** to accept |
+| Parameter LabRoleArn | Paste your full LabRole ARN |
+| Confirm changes before deploy [Y/n] | `y` |
+| Allow SAM CLI IAM role creation [Y/n] | `n` |
+| Disable rollback [y/N] | `n` |
+| `MusicSubscriptionFunction` may not have authorization defined, Is this okay? [y/N] | `y` — repeat this for each of the approximately 11 route prompts |
+| Save arguments to configuration file [Y/n] | `y` |
+| SAM configuration file [samconfig.toml] | Press **Enter** to accept |
+| SAM configuration environment [default] | Press **Enter** to accept |
+
+SAM will display a changeset preview listing every AWS resource it will create
+— the Lambda function, API Gateway, all routes, CloudWatch log group, and IAM
+bindings. When asked `Deploy this changeset? [y/N]` type `y`.
+
+Deployment takes approximately 1–3 minutes. On success you will see:
+
+```
+Successfully created/updated stack - music-subscription-lambda in us-east-1
+```
+
+### Step 4.5 — Retrieve your API URL
+
+Immediately after a successful deployment SAM prints an Outputs table to the
+terminal:
+
+```
+------------------------------------------------------------------------------------
+Outputs
+------------------------------------------------------------------------------------
+Key         ApiBaseUrl
+Description Live API Gateway base URL — paste this into frontend/config.js
+Value       https://nsf6ua05d6.execute-api.us-east-1.amazonaws.com/prod
+------------------------------------------------------------------------------------
+```
+
+Copy the `Value`. If you need to retrieve it later at any time:
+
+```bash
+aws cloudformation describe-stacks \
+  --stack-name music-subscription-lambda \
+  --query "Stacks[0].Outputs[?OutputKey=='ApiBaseUrl'].OutputValue" \
+  --output text
+```
+
+### Step 4.6 — Update the frontend config
+
+Open `frontend/config.js` and set your API base URL:
+
+```javascript
+const API_BASE_URL = "https://nsf6ua05d6.execute-api.us-east-1.amazonaws.com/prod";
+```
+
+### Step 4.7 — Smoke test the live API
+
+Run a quick set of manual tests to confirm the deployed API is responding
+correctly before deploying the frontend.
+
+**Linux / Mac:**
+
+```bash
+export API="https://nsf6ua05d6.execute-api.us-east-1.amazonaws.com/prod"
+
+# Health check
+curl $API/
+
+# Login with a seed user
+curl -s -X POST $API/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"s1234567+0@student.rmit.edu.au","password":"012345"}'
+
+# Query songs by artist
+curl -s "$API/songs?artist=Taylor+Swift"
+```
+
+**Windows PowerShell:**
+
+```powershell
+$API = "https://nsf6ua05d6.execute-api.us-east-1.amazonaws.com/prod"
+
+# Health check
+Invoke-RestMethod -Uri "$API/"
+
+# Login
+Invoke-RestMethod -Method POST -Uri "$API/login" `
+  -ContentType "application/json" `
+  -Body '{"email":"s1234567+0@student.rmit.edu.au","password":"012345"}'
+
+# Song query
+Invoke-RestMethod -Uri "$API/songs?artist=Taylor Swift"
+```
+
+All three commands should return valid JSON responses. If the login returns
+`{"success": true}` and the song query returns a `songs` array, the backend is
+fully operational.
+
+### Step 4.8 — Subsequent deploys after code changes
+
+After the first deployment, SAM saves all your configuration to `samconfig.toml`
+in the `lambda_backend/` directory. All future deploys after code changes are
+a single command with no interactive prompts:
+
+```bash
+sam build --use-container && sam deploy
+```
+
+### Tear down the Lambda stack
+
+To remove all Lambda and API Gateway resources when no longer needed:
+
+```bash
+sam delete --stack-name music-subscription-lambda
+```
+
+This removes the Lambda function, API Gateway, and CloudFormation stack.
+DynamoDB tables and the S3 bucket are **not** deleted as they are shared
+infrastructure.
+
+---
+
+## Part 5 — Frontend Deployment
 
 The Sonata frontend is a set of static HTML, CSS, and JavaScript files that
 require no server-side rendering. The recommended hosting method is Amazon S3
@@ -897,7 +1159,7 @@ static website hosting.
 Before uploading any files, confirm that `frontend/config.js` has been updated
 with the correct `API_BASE_URL` for your deployed backend.
 
-**Step 4A.1 — Create a dedicated frontend S3 bucket**
+**Step 5A.1 — Create a dedicated frontend S3 bucket**
 
 This must be a separate bucket from your images bucket:
 
@@ -907,7 +1169,7 @@ aws s3api create-bucket \
   --region us-east-1
 ```
 
-**Step 4A.2 — Enable static website hosting**
+**Step 5A.2 — Enable static website hosting**
 
 ```bash
 aws s3 website s3://sonata-frontend-<your-student-id>/ \
@@ -915,7 +1177,7 @@ aws s3 website s3://sonata-frontend-<your-student-id>/ \
   --error-document login.html
 ```
 
-**Step 4A.3 — Make the bucket publicly readable**
+**Step 5A.3 — Make the bucket publicly readable**
 
 ```bash
 # Disable the block public access setting
@@ -949,13 +1211,13 @@ aws s3api put-bucket-policy \
   --policy file://frontend-policy.json
 ```
 
-**Step 4A.4 — Upload all frontend files**
+**Step 5A.4 — Upload all frontend files**
 
 ```bash
 aws s3 sync frontend/ s3://sonata-frontend-<your-student-id>/
 ```
 
-**Step 4A.5 — Access the live application**
+**Step 5A.5 — Access the live application**
 
 Your application is now publicly available at:
 
@@ -969,16 +1231,23 @@ To update the frontend after any changes, re-run the sync command:
 aws s3 sync frontend/ s3://sonata-frontend-<your-student-id>/
 ```
 
-### Option B — Open locally (development and quick testing only)
+### Option B — EC2-hosted frontend (Part 2 path only)
+
+If you deployed the EC2 backend in Part 2, the frontend is already being served
+from port 8000 of the same instance. No additional setup is required — simply
+open `http://<EC2_PUBLIC_IP>:8000/login.html` in your browser. To update after
+changes, re-upload the modified files via `scp` as described in Step 2.4.
+
+### Option C — Open locally (development and quick testing only)
 
 Open `frontend/login.html` directly in your browser. Since `config.js` points
-to a live HTTPS URL, the frontend connects to your deployed backend without
-requiring a local web server. This method is suitable for rapid testing but
-not for submission or sharing.
+to a live URL, the frontend connects to your deployed backend without requiring
+a local web server. This method is suitable for rapid testing but not for
+submission or sharing.
 
 ---
 
-## Part 5 — End-to-End Verification
+## Part 6 — End-to-End Verification
 
 ### Automated DynamoDB verification script
 
@@ -1037,9 +1306,11 @@ application flow is working:
 
 ## API Reference
 
-Base URL (Lambda): `https://<api-id>.execute-api.us-east-1.amazonaws.com/prod`
+Base URL (EC2): `http://<ec2-public-ip>:5000`
 
 Base URL (ECS): `http://<ecs-public-ip>`
+
+Base URL (Lambda): `https://<api-id>.execute-api.us-east-1.amazonaws.com/prod`
 
 All endpoints accept and return `application/json`. The `music_id` composite
 key format used for subscription operations is: `{artist}#{title}#{year}#{album}`
@@ -1231,6 +1502,31 @@ Work through the following checklist in order:
 
 ---
 
+### EC2 Flask server not responding
+
+If the API is unreachable from your browser or `curl`:
+
+1. Confirm the Flask process is still running on the instance: `ssh` in and run `ps aux | grep python3`
+2. If the process has stopped, restart it with `cd ~/backend_flask && nohup python3 app.py > ~/flask.log 2>&1 &`
+3. Confirm the security group has an inbound rule allowing TCP on port 5000 from `0.0.0.0/0` — navigate to **EC2 → Security Groups → sonata-sg → Inbound rules**
+4. Confirm the instance has a public IP and has not been stopped — navigate to **EC2 → Instances** and check the **Instance state** and **Public IPv4 address** columns
+5. Check the Flask log for Python exceptions: `tail -50 ~/flask.log`
+
+---
+
+### EC2 `Permission denied (publickey)` on SSH or SCP
+The `.pem` key file permissions are too open. On Linux and Mac run:
+
+```bash
+chmod 400 /path/to/sonata-key.pem
+```
+
+Then retry the `ssh` or `scp` command. On Windows this error usually means the
+wrong key file is being specified — confirm the path in your command exactly
+matches where the `.pem` was saved when downloaded.
+
+---
+
 ### Lambda returns `{"message": "Internal Server Error"}`
 API Gateway returns this generic message when the Lambda function throws an
 uncaught Python exception. To find the actual error:
@@ -1243,17 +1539,15 @@ Common causes and fixes:
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| `AccessDeniedException` in the traceback | Lambda execution role missing DynamoDB permissions | Attach `AmazonDynamoDBFullAccess` to LabRole in IAM |
+| `AccessDeniedException` in the traceback | Lambda execution role missing DynamoDB permissions | Confirm LabRole is attached to the Lambda function in the SAM template |
 | `ResourceNotFoundException` in the traceback | Table name in `lambda_function.py` doesn't match what was created | Confirm `LOGIN_TABLE`, `MUSIC_TABLE`, `SUBSCRIPTIONS_TABLE` constants match the actual DynamoDB table names |
-| `ExpiredTokenException` in the traceback | Lambda was deployed with a short-lived credential that expired | Refresh credentials and redeploy: `sam build --use-container && sam deploy` |
+| `ExpiredTokenException` in the traceback | Lab session expired mid-deployment | Refresh credentials and redeploy: `sam build --use-container && sam deploy` |
 
 ---
 
 ### `AccessDeniedException` on all ECS API calls
-The ECS task IAM role is missing database permissions. Navigate to **IAM →
-Roles → LabRole → Permissions** and attach both `AmazonDynamoDBFullAccess` and
-`AmazonS3ReadOnlyAccess`. Then force a new task deployment to pick up the
-updated role:
+Confirm that `LabRole` is specified as both the `executionRoleArn` and `taskRoleArn`
+in `task-def.json`, then force a new task deployment to pick up the updated role:
 
 ```bash
 aws ecs update-service \
@@ -1294,16 +1588,16 @@ sam build --use-container && sam deploy --force-upload
 
 ### CORS errors appearing in the browser console
 
+**EC2 / ECS path:** `flask_cors` is applied globally via `CORS(app)` in `app.py`
+and covers all routes automatically. If CORS errors appear, the server is likely
+not running or is crashing before handling the request — check `~/flask.log` on
+EC2 or `/ecs/music-subscription` in CloudWatch for ECS.
+
 **Lambda path:** The `lambda_function.py` returns CORS headers on every
 response, including OPTIONS preflight requests. If CORS errors still appear,
 the request is likely hitting a route that does not exist in API Gateway, which
 returns its own 403 or 404 without CORS headers. Verify that the resource and
 method exist and that the API was **redeployed** after any changes.
-
-**ECS path:** `flask_cors` is applied globally via `CORS(app)` in `app.py` and
-covers all routes automatically. If CORS errors appear, the container is likely
-crashing before handling the request — check `/ecs/music-subscription` in
-CloudWatch Logs.
 
 ---
 
@@ -1325,6 +1619,8 @@ identify the exact cause.
 | DynamoDB table | `subscriptions` |
 | S3 bucket — artist images | `your-bucket-name` |
 | S3 bucket — frontend hosting | `sonata-frontend-<your-student-id>` |
+| EC2 instance | `sonata-backend` (Amazon Linux 2023, t3.micro) |
+| EC2 security group | `sonata-sg` — ports 22, 5000, 8000 |
 | Lambda function | `music-subscription-handler` |
 | API Gateway REST API | `music-subscription-api` (deployed stage: `prod`) |
 | CloudFormation stack | `music-subscription-lambda` |
@@ -1332,5 +1628,5 @@ identify the exact cause.
 | ECS cluster | `music-app-cluster` |
 | ECS service | `music-api-service` |
 | CloudWatch log group (ECS) | `/ecs/music-subscription` |
-| IAM role | `LabRole` — used for Lambda execution and ECS task role |
+| IAM role | `LabRole` — used for EC2 instance profile, Lambda execution, and ECS task role |
 | AWS region | `us-east-1` |
